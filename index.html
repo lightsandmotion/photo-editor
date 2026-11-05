@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Simple Photo Editor</title>
+<style>
+:root{--bg:#f4f4f6;--pn:#fff;--tx:#1b1b1f;--mu:#6b6b76;--ac:#2f6df6;--bd:#dcdce2;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121214;--pn:#1c1c20;--tx:#ececf1;--mu:#9a9aa6;--ac:#5b8cff;--bd:#2c2c33}}
+:root[data-theme="dark"]{--bg:#121214;--pn:#1c1c20;--tx:#ececf1;--mu:#9a9aa6;--ac:#5b8cff;--bd:#2c2c33}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--tx);font:15px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column}
+#view{flex:1 1 40%;min-height:180px;display:flex;align-items:center;justify-content:center;padding:8px;overflow:hidden}
+canvas{max-width:100%;max-height:100%;border-radius:6px}
+#empty{color:var(--mu);text-align:center;padding:20px}
+#panel{flex:0 0 auto;max-height:52%;overflow-y:auto;background:var(--pn);border-top:1px solid var(--bd);padding:10px 14px 14px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+button,label.b{background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:10px;padding:9px 12px;font-size:14px;cursor:pointer}
+button.p{background:var(--ac);border-color:var(--ac);color:#fff}
+.s{margin:8px 0}.s div{display:flex;justify-content:space-between;color:var(--mu);font-size:13px}
+input[type=range]{width:100%;accent-color:var(--ac)}
+h3{margin:12px 0 4px;font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.05em}
+#out{position:fixed;inset:0;background:rgba(0,0,0,.88);display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#fff;z-index:9;padding:12px;text-align:center}
+#out img{max-width:94%;max-height:70%}
+#msg{color:var(--mu);font-size:12px;margin:4px 0}
+</style></head><body>
+<div id="view"><div id="empty">Tap <b>Open photo</b> to start.<br>JPEG, PNG or RAW</div><canvas id="cv" hidden></canvas></div>
+<div id="panel">
+<div class="row">
+<button class="p" id="op">Open photo</button><input id="file" type="file" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0">
+<button id="ae">Auto exposure</button><button id="aw">Auto white balance</button><button id="ai">✨ Smart enhance</button>
+</div>
+<div id="msg"></div>
+<h3>Light &amp; color</h3><div id="sl"></div>
+<h3>LUT</h3>
+<div class="row"><button id="lutb">Load .cube LUT</button><input id="lutf" type="file" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0"><button id="lutx">Remove LUT</button></div>
+<div class="s"><div><span>LUT balance</span><span id="lv">100%</span></div><input id="la" type="range" min="0" max="100" value="100"></div>
+<div class="row" style="margin-top:12px"><button id="rs">Reset</button><button class="p" id="ex">Export JPEG</button><button id="exp">Export PNG</button></div>
+</div>
+<div id="out"><img id="oi" alt=""><div>Long-press the image and choose Save. In the installed app, export opens the share sheet where you can save to your gallery or files.</div><button id="oc">Close</button></div>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)};
+var cv=$('cv'),cx=cv.getContext('2d',{willReadFrequently:true});
+var big=null,sd=null,od=null,st,PREV=1600;
+var defs=[['ev','Exposure',-3,3,.01],['hl','Highlights',-1,1,.01],['sh','Shadows',-1,1,.01],['temp','Temperature',-1,1,.01],['tint','Tint',-1,1,.01],['con','Contrast',-.6,.6,.01],['sat','Saturation',-1,1,.01]];
+function fresh(){return{ev:0,hl:0,sh:0,temp:0,tint:0,con:0,sat:0,wb:[1,1,1],lut:null,amt:1}}
+st=fresh();
+var sw=$('sl');
+defs.forEach(function(d){var w=document.createElement('div');w.className='s';
+w.innerHTML='<div><span>'+d[1]+'</span><span id="v_'+d[0]+'">0</span></div><input type="range" id="r_'+d[0]+'" min="'+d[2]+'" max="'+d[3]+'" step="'+d[4]+'" value="0">';
+sw.appendChild(w);w.querySelector('input').oninput=function(e){st[d[0]]=+e.target.value;sync();draw()}});
+function sync(){defs.forEach(function(d){$('r_'+d[0]).value=st[d[0]];$('v_'+d[0]).textContent=(+st[d[0]]).toFixed(2)});$('la').value=st.amt*100;$('lv').textContent=Math.round(st.amt*100)+'%'}
+var lin=new Float32Array(256),i;for(i=0;i<256;i++){var c=i/255;lin[i]=c<=.04045?c/12.92:Math.pow((c+.055)/1.055,2.4)}
+var tS=new Uint8ClampedArray(4096);for(i=0;i<4096;i++){var l=i/4095;tS[i]=255*(l<=.0031308?l*12.92:1.055*Math.pow(l,1/2.4)-.055)+.5}
+function msg(t){$('msg').textContent=t||''}
+var pend=false;function draw(){if(!sd||pend)return;pend=true;requestAnimationFrame(function(){pend=false;process(sd,od,st);cx.putImageData(od,0,0)})}
+function process(a,o,s){
+ var d=a.data,e=o.data,g=Math.pow(2,s.ev),gr=g*s.wb[0]*(1+s.temp*.3),gg=g*s.wb[1]*(1-s.tint*.3),gb=g*s.wb[2]*(1-s.temp*.3);
+ var k=1+s.con,sa=1+s.sat,L=s.lut,N=L?L.n:0,D=L?L.d:null,m=N-1,am=s.amt,n=d.length,p,r,gc,b;
+ for(p=0;p<n;p+=4){
+  r=tS[Math.min(4095,lin[d[p]]*gr*4095+.5|0)]/255;gc=tS[Math.min(4095,lin[d[p+1]]*gg*4095+.5|0)]/255;b=tS[Math.min(4095,lin[d[p+2]]*gb*4095+.5|0)]/255;
+  var y0=.2126*r+.7152*gc+.0722*b,yc=y0<0?0:y0>1?1:y0,ad=s.sh*.3*(1-yc)*(1-yc)+s.hl*.3*yc*yc;r+=ad;gc+=ad;b+=ad;
+  r=(r-.5)*k+.5;gc=(gc-.5)*k+.5;b=(b-.5)*k+.5;
+  var y=.2126*r+.7152*gc+.0722*b;r=y+(r-y)*sa;gc=y+(gc-y)*sa;b=y+(b-y)*sa;
+  r=r<0?0:r>1?1:r;gc=gc<0?0:gc>1?1:gc;b=b<0?0:b>1?1:b;
+  if(L&&am>0){
+   var x=r*m,yy=gc*m,z=b*m,x0=x|0,y0=yy|0,z0=z|0,x1=Math.min(x0+1,m),y1=Math.min(y0+1,m),z1=Math.min(z0+1,m),fx=x-x0,fy=yy-y0,fz=z-z0,c=0,out=[0,0,0];
+   for(c=0;c<3;c++){
+    var c00=D[(x0+y0*N+z0*N*N)*3+c]*(1-fx)+D[(x1+y0*N+z0*N*N)*3+c]*fx,
+        c10=D[(x0+y1*N+z0*N*N)*3+c]*(1-fx)+D[(x1+y1*N+z0*N*N)*3+c]*fx,
+        c01=D[(x0+y0*N+z1*N*N)*3+c]*(1-fx)+D[(x1+y0*N+z1*N*N)*3+c]*fx,
+        c11=D[(x0+y1*N+z1*N*N)*3+c]*(1-fx)+D[(x1+y1*N+z1*N*N)*3+c]*fx;
+    out[c]=(c00*(1-fy)+c10*fy)*(1-fz)+(c01*(1-fy)+c11*fy)*fz}
+   r+=(out[0]-r)*am;gc+=(out[1]-gc)*am;b+=(out[2]-b)*am}
+  e[p]=r*255+.5;e[p+1]=gc*255+.5;e[p+2]=b*255+.5;e[p+3]=255}
+}
+function load(bmp){
+ big=bmp;var sc=Math.min(1,PREV/Math.max(bmp.width,bmp.height)),w=Math.round(bmp.width*sc),h=Math.round(bmp.height*sc);
+ cv.width=w;cv.height=h;cx.drawImage(bmp,0,0,w,h);sd=cx.getImageData(0,0,w,h);od=cx.createImageData(w,h);
+ var lut=st.lut,amt=st.amt;st=fresh();st.lut=lut;st.amt=amt;
+ $('empty').hidden=true;cv.hidden=false;sync();draw()}
+function stats(){var d=sd.data,n=d.length,sl=0,r=0,g=0,b=0,c=0,p,y;
+ for(p=0;p<n;p+=16){var R=lin[d[p]],G=lin[d[p+1]],B=lin[d[p+2]];y=.2126*R+.7152*G+.0722*B;sl+=Math.log(y+1e-4);r+=R;g+=G;b+=B;c++}
+ return{gm:Math.exp(sl/c),r:r/c,g:g/c,b:b/c}}
+$('op').onclick=function(){try{$('file').click()}catch(_){msg('This view blocks the file picker. Open the link in Chrome.')}};
+$('lutb').onclick=function(){try{$('lutf').click()}catch(_){msg('This view blocks the file picker. Open the link in Chrome.')}};
+$('ae').onclick=function(){if(!sd)return;var s=stats();st.ev=Math.max(-3,Math.min(3,Math.log(.18/s.gm)/Math.LN2));sync();draw();msg('Exposure set automatically.')};
+$('aw').onclick=function(){if(!sd)return;var s=stats(),cl=function(v){return Math.max(.5,Math.min(2,v))};st.wb=[cl(s.g/s.r),1,cl(s.g/s.b)];st.temp=0;st.tint=0;sync();draw();msg('White balance set automatically.')};
+$('rs').onclick=function(){var l=st.lut,a=st.amt;st=fresh();st.lut=l;st.amt=a;sync();draw();msg('')};
+$('la').oninput=function(e){st.amt=e.target.value/100;sync();draw()};
+$('lutx').onclick=function(){st.lut=null;draw();msg('LUT removed.')};
+$('lutf').onchange=function(e){var f=e.target.files[0];if(!f)return;var rd=new FileReader();rd.onload=function(){
+ var lines=rd.result.split(/\r?\n/),n=0,arr=[],j,t;
+ for(j=0;j<lines.length;j++){t=lines[j].trim();if(!t||t[0]=='#')continue;
+  if(/^LUT_3D_SIZE/i.test(t)){n=parseInt(t.split(/\s+/)[1]);continue}
+  if(/^[A-Z_]+/i.test(t)&&!/^[-0-9.]/.test(t))continue;
+  var q=t.split(/\s+/);if(q.length>=3)arr.push(+q[0],+q[1],+q[2])}
+ if(!n||arr.length<n*n*n*3){msg('Could not read that LUT. Use a 3D .cube file.');return}
+ st.lut={n:n,d:new Float32Array(arr)};st.amt=1;sync();draw();msg('LUT loaded: '+f.name)};rd.readAsText(f);e.target.value=''};
+function rawPreview(buf){
+ var u=new Uint8Array(buf),starts=[],p;
+ for(p=0;p<u.length-3&&starts.length<12;p++){if(u[p]==255&&u[p+1]==216&&u[p+2]==255)starts.push(p)}
+ var best=null,tries=starts.map(function(s){return createImageBitmap(new Blob([u.subarray(s)],{type:'image/jpeg'})).catch(function(){return null})});
+ return Promise.all(tries).then(function(r){r.forEach(function(b){if(b&&(!best||b.width*b.height>best.width*best.height))best=b});return best})}
+$('file').onchange=function(e){var f=e.target.files[0];if(!f)return;msg('Loading…');
+ if(/^image\/(jpeg|png|webp)/.test(f.type)){createImageBitmap(f).then(function(b){load(b);msg(f.name)}).catch(function(){msg('Could not open this image.')})}
+ else{f.arrayBuffer().then(rawPreview).then(function(b){if(!b){msg('No readable preview found in this RAW file.');return}load(b);msg('RAW opened using its embedded full-size preview.')})}
+ e.target.value=''};
+function exportImg(type){if(!big)return;msg('Exporting…');
+ setTimeout(function(){var sc=Math.min(1,6000/Math.max(big.width,big.height)),w=Math.round(big.width*sc),h=Math.round(big.height*sc),c=document.createElement('canvas');c.width=w;c.height=h;
+ var x=c.getContext('2d',{willReadFrequently:true});x.drawImage(big,0,0,w,h);var a=x.getImageData(0,0,w,h),o=x.createImageData(w,h);process(a,o,st);x.putImageData(o,0,0);
+ c.toBlob(function(bl){var P=window.Capacitor&&window.Capacitor.Plugins;if(P&&P.Filesystem&&P.Share&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform()){var fr=new FileReader();fr.onload=function(){var nm='edited-'+Date.now()+(type=='image/png'?'.png':'.jpg');P.Filesystem.writeFile({path:nm,data:String(fr.result).split(',')[1],directory:'CACHE'}).then(function(r){return P.Share.share({title:'Edited photo',url:r.uri})}).then(function(){msg('Exported '+w+'×'+h)}).catch(function(err){msg('Export failed: '+((err&&err.message)||err))})};fr.readAsDataURL(bl);return}var u=URL.createObjectURL(bl);$('oi').src=u;$('out').style.display='flex';msg('Exported '+w+'×'+h);
+  try{var l=document.createElement('a');l.href=u;l.download='edited.'+(type=='image/png'?'png':'jpg');l.click()}catch(_){}},type,.95)},30)}
+$('ex').onclick=function(){exportImg('image/jpeg')};$('exp').onclick=function(){exportImg('image/png')};
+function cl(v,a,b){v=+v;return isNaN(v)?0:Math.max(a,Math.min(b,v))}
+$('ai').onclick=function(){
+ if(!sd){msg('Open a photo first.');return}
+ var s=stats(),q=function(v){return Math.max(.5,Math.min(2,v))};
+ st.ev=cl(Math.log(.18/s.gm)/Math.LN2,-3,3);st.wb=[q(s.g/s.r),1,q(s.g/s.b)];st.temp=0;st.tint=0;st.con=0;st.sat=0;st.hl=0;st.sh=0;
+ process(sd,od,st);var e=od.data,n=e.length,p,sm=0,sq=0,ch=0,c=0,y;
+ for(p=0;p<n;p+=16){y=(.2126*e[p]+.7152*e[p+1]+.0722*e[p+2])/255;sm+=y;sq+=y*y;ch+=(Math.max(e[p],e[p+1],e[p+2])-Math.min(e[p],e[p+1],e[p+2]))/255;c++}
+ var m=sm/c,sd2=Math.sqrt(Math.max(1e-6,sq/c-m*m)),av=ch/c;
+ st.con=cl(.24/sd2-1,-.15,.35);st.sat=cl(.2/Math.max(av,.02)-1,-.2,.35);
+ sync();draw();msg('Smart enhance applied. Fine-tune with the sliders.')};
+$('oc').onclick=function(){$('out').style.display='none'};
+})();
+</script></body></html>
